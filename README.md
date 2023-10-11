@@ -40,6 +40,9 @@ O HomeOffice Device é um dispositivo baseado em ESP32 projetado para monitorar 
 6. **RNF06 - Usabilidade:**
    - Os dados no display devem ser facilmente legíveis e a interação via SPI deve ser intuitiva e fácil de usar.
 
+## Diagrama de Blocos
+![Alt](HomeOfficeDevice.drawio.svg)
+
 ## Uso
 O HomeOffice Device foi projetado para ser utilizado com um dispositivo mestre SPI, que comunica com o ESP32 para ler os dados do sensor INA219 e controlar o estado do relé. O dispositivo também fornece feedback visual para o usuário através do display PCD8544 e permite que o estado do relé seja alterado através de um botão físico.
 
