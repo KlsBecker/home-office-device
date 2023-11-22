@@ -16,6 +16,8 @@
 #include <driver/spi_common.h>
 #include <pcd8544.h>
 #include <driver/spi_slave.h>
+#include <freertos/semphr.h>
+
 
 /**
  * @brief INA219 configuration
@@ -41,6 +43,15 @@
 #define RELAY_GPIO 2
 #define BUTTON_GPIO 32
 
+
+#define CMD_READ_VOLTAGE 0x01       /* SPI Read Voltage command */
+#define CMD_READ_CURRENT 0x02       /* SPI Read Current command */
+#define CMD_READ_POWER 0x03         /* SPI Read Power command */
+#define CMD_READ_RELAY 0x04         /* SPI Read Relay command */
+#define CMD_READ_ALL 0x05           /* SPI Read All command */
+#define CMD_SET_RELAY_ON 0x06       /* SPI Set Relay On command */
+#define CMD_SET_RELAY_OFF 0x07      /* SPI Set Relay Off command */
+
 const static char *TAG = "TGA-KLS";
 
 /**
@@ -57,6 +68,14 @@ static struct gs_ina219Measuring
  * @brief Relay state variable
  */
 static bool gs_relayState;
+
+/* Homeoffice device struct data */
+typedef struct homeoffice_data{
+    float voltage;
+    float current;
+    float power;
+    uint8_t relay;
+}__attribute__((__packed__)) homeoffice_data;
 
 /**
  * INA219 sensor task
@@ -85,10 +104,10 @@ void ina219(void *pvParameters)
         ESP_ERROR_CHECK(ina219_get_current(&dev, &gs_ina219Measuring.current));
         ESP_ERROR_CHECK(ina219_get_power(&dev, &gs_ina219Measuring.power));
 
-        printf("V: %05.2f V | I: %05.2f mA | P: %05.2f mW \n ",
-               gs_ina219Measuring.voltage,
-               gs_ina219Measuring.current * 1000,
-               gs_ina219Measuring.power * 1000);
+        // printf("V: %05.2f V | I: %05.2f mA | P: %05.2f mW \n ",
+        //        gs_ina219Measuring.voltage,
+        //        gs_ina219Measuring.current * 1000,
+        //        gs_ina219Measuring.power * 1000);
 
         vTaskDelay(pdMS_TO_TICKS(500));
     }
@@ -128,10 +147,40 @@ void pcd8544(void *pvParameters)
 }
 
 /**
+ * @brief Get the SPI command string
+ * 
+ * @param cmd SPI Command
+ * @return char* 
+ */
+static char *get_cmd_str(uint8_t cmd)
+{
+    switch (cmd)
+    {
+    case CMD_READ_VOLTAGE:
+        return "READ VOLTAGE";
+    case CMD_READ_CURRENT:
+        return "READ CURRENT";
+    case CMD_READ_POWER:
+        return "READ POWER";
+    case CMD_READ_RELAY:
+        return "READ RELAY";
+    case CMD_READ_ALL:
+        return "READ ALL";
+    case CMD_SET_RELAY_ON:
+        return "SET RELAY ON";
+    case CMD_SET_RELAY_OFF:
+        return "SET RELAY OFF";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+/*
  * @brief SPI slave task
 */
 void spiSlave(void *param)
 {
+    int ret,n=0,cmd;
     spi_bus_config_t buscfg = {
         .miso_io_num = SPI_MISO,
         .mosi_io_num = SPI_MOSI,
@@ -143,10 +192,10 @@ void spiSlave(void *param)
     spi_slave_interface_config_t slvcfg = {
         .mode = 0,
         .spics_io_num = SPI_CS,
-        .queue_size = 3,
+        .queue_size = 1,
         .flags = 0,
-        .post_setup_cb = NULL,
-        .post_trans_cb = NULL,
+        .post_setup_cb = 0,
+        .post_trans_cb = 0,
     };
 
     gpio_set_pull_mode(SPI_MOSI, GPIO_PULLUP_ONLY);
@@ -154,52 +203,79 @@ void spiSlave(void *param)
     gpio_set_pull_mode(SPI_CS, GPIO_PULLUP_ONLY);
 
     ESP_LOGI(TAG, "Initializing SPI slave");
-    spi_slave_initialize(RCV_HOST, &buscfg, &slvcfg, SPI_DMA_CH_AUTO);
+    ret = spi_slave_initialize(RCV_HOST, &buscfg, &slvcfg, SPI_DMA_CH_AUTO);
+    assert(ret == ESP_OK);
 
-    char sendbuf[128] = {0};
-    char recvbuf[128] = {0};
+    WORD_ALIGNED_ATTR uint8_t sendbuf[128] = "";
+    WORD_ALIGNED_ATTR uint8_t recvbuf[128] = "";
 
-    memset(recvbuf, 0, 33);
     spi_slave_transaction_t t;
-    memset(&t, 0, sizeof(t));
 
-    ESP_LOGI(TAG, "Starting SPI slave loop");
-    while (1)
-    {
-        t.length = sizeof(sendbuf) * 8;
-        t.tx_buffer = sendbuf;
+
+
+    while (1) {
+        memset(&t, 0, sizeof(t));
+        memset(sendbuf, 0, sizeof(sendbuf));
+        memset(recvbuf, 0, sizeof(recvbuf));
+
+        t.length = 20 * 8;
+        t.tx_buffer = NULL;
         t.rx_buffer = recvbuf;
 
-        spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
+        ret = spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
 
-        memset(sendbuf, 0, t.length/8);
-        switch (recvbuf[0])
+        cmd = recvbuf[0];
+        printf("CMD: %s (%d)\n", get_cmd_str(cmd), cmd);
+    
+        switch (cmd)
         {
-        case 1:
-            sendbuf[0] = 1; 
+        case CMD_READ_VOLTAGE:
+            sendbuf[0] = CMD_READ_VOLTAGE; 
             memcpy(&sendbuf[1], &gs_ina219Measuring.voltage, sizeof(float));
             break;
-        case 2:
-            sendbuf[0] = 2; 
+        case CMD_READ_CURRENT:
+            sendbuf[0] = CMD_READ_CURRENT; 
             memcpy(&sendbuf[1], &gs_ina219Measuring.current, sizeof(float));
             break;
-        case 3:
-            sendbuf[0] = 3; 
+        case CMD_READ_POWER:
+            sendbuf[0] = CMD_READ_POWER; 
             memcpy(&sendbuf[1], &gs_ina219Measuring.power, sizeof(float));
             break;
-        case 4:
-            sendbuf[0] = 4; 
+        case CMD_READ_RELAY:
+            sendbuf[0] = CMD_READ_RELAY; 
             sendbuf[1] = gs_relayState;
             break;
-        case 5:
-            sendbuf[0] = 5; 
-            gs_relayState = recvbuf[1];
+        case CMD_READ_ALL:
+            sendbuf[0] = CMD_READ_ALL; 
+            memcpy(&sendbuf[1], &gs_ina219Measuring.voltage, sizeof(float));
+            memcpy(&sendbuf[5], &gs_ina219Measuring.current, sizeof(float));
+            memcpy(&sendbuf[9], &gs_ina219Measuring.power, sizeof(float));
+            sendbuf[13] = gs_relayState;
+            break;
+        case CMD_SET_RELAY_ON:
+            sendbuf[0] = CMD_SET_RELAY_ON; 
+            gs_relayState = 1;
+            sendbuf[1] = gs_relayState;
+            break;
+        case CMD_SET_RELAY_OFF:
+            sendbuf[0] = CMD_SET_RELAY_OFF; 
+            gs_relayState = 0;
             sendbuf[1] = gs_relayState;
             break;
         default:
-            ESP_LOGI(TAG, "spiSlave: Unknown command");
+            break;
         }
+        
+        memset(&t, 0, sizeof(t));
+
+        t.length = 20 * 8;
+        t.trans_len = 20 * 8;
+        t.tx_buffer = sendbuf;
+        t.rx_buffer = NULL;
+        
+        ret = spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
     }
+
 }
 
 /**
@@ -243,7 +319,7 @@ static void relay(void* arg)
 }
 
 /**
- * @brief 
+ * @brief Main function
  * 
  */
 void app_main()
