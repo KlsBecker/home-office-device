@@ -1,7 +1,7 @@
 menu "Example configuration"
     config EXAMPLE_MAX_CURRENT
         int "Expected max current in Ampare to measure"
-        default 3.2
+        default 3
         help
             Expected max current in Ampare. Note that the value must be int, not float.
 
